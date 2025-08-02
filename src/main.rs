@@ -32,6 +32,7 @@ struct RemoveArgs {
     #[arg(long)]
     region: Region,
     #[arg(long)]
+    /// An ISO 3166-1 alpha-2 code, e.g. "US" or "JP".
     country: String,
     /// Where to save the new MovieObject.bdmv file.
     output_path: PathBuf,
