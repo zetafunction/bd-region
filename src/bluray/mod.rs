@@ -227,7 +227,8 @@ pub enum Operand {
     /// 96: playlist indicator #1 (b31-b24), #2 (b23-b16), #3 (b15-b8), #4 (b7-b0)
     /// 97: playlist indicator #5 (b31-b24), #6 (b23-b16), reserved (b15-b0)
     Psr(u8),
-    // TODO: It's possible if this isn't needed if OperandCount is observed during decoding.
+    /// Some commands, like SetStream, may not set the immediate flag but still interpret the
+    /// operand in a way that is not a register.
     Unknown(u32),
 }
 
