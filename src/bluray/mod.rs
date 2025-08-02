@@ -8,7 +8,7 @@ const MOVIE_OBJECT_PATH: &str = "BDMV/MovieObject.bdmv";
 const MOVIE_OBJECT_HEADER: &[u8] = b"MOBJ0200";
 
 /// Blu-Ray media region codes
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Region {
     /// North America, South America, U.S. Territories, Japan, South Korea, Taiwan, and other areas of
     /// Southeast Asia.
@@ -20,9 +20,10 @@ pub enum Region {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct BluRay {
     path: PathBuf,
-    movie_objects: Vec<MovieObject>,
+    pub movie_objects: Vec<MovieObject>,
 }
 
 #[derive(Debug, Error)]
@@ -53,32 +54,37 @@ pub enum OpenError {
         "invalid MovieObject.bdmv: movie object #{0} navigation command #{1} could not be decoded: {2:#04x?}"
     )]
     NavigationCommandInvalid(u16, u16, [u8; 12]),
-    #[error("Invalid MovieObject.bdmv: movie object #{0} navigation command #{1} has bad register {2:#04x}")]
-    NavigationCommandBadRegister(u16, u16, u32),
+    #[error("Invalid MovieObject.bdmv: movie object #{0} navigation command #{1} has bad operand count {2:#04x}")]
+    NavigationCommandBadOperandCount(u16, u16, u8),
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct MovieObject {
     resume_intention: bool,
     menu_call_mask: bool,
     title_search_mask: bool,
-    navigation_commands: Vec<NavigationCommand>,
+    pub navigation_commands: Vec<NavigationCommand>,
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct NavigationCommand {
-    command: Command,
-    destination: Operand,
-    source: Operand,
+    pub command: Command,
+    pub operand_count: OperandCount,
+    pub destination: Operand,
+    pub source: Operand,
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub enum Command {
     Branch(Branch),
     Compare(Compare),
     Set(Set),
 }
 
+#[derive(Debug)]
 pub enum Branch {
     Nop,
     GoTo,
@@ -96,6 +102,7 @@ pub enum Branch {
     LinkMark,
 }
 
+#[derive(Debug)]
 pub enum Compare {
     Bc,
     Eq,
@@ -107,6 +114,7 @@ pub enum Compare {
 }
 
 #[allow(clippy::enum_variant_names)]
+#[derive(Debug)]
 pub enum Set {
     Move,
     Swap,
@@ -135,6 +143,15 @@ pub enum Set {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
+pub enum OperandCount {
+    None,
+    DestinationOnly,
+    DestinationAndSource,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
 pub enum Operand {
     Immediate(u32),
     /// A general-purpose register. Valid values are 0 to 4095, inclusive.
@@ -196,21 +213,23 @@ pub enum Operand {
     /// 96: playlist indicator #1 (b31-b24), #2 (b23-b16), #3 (b15-b8), #4 (b7-b0)
     /// 97: playlist indicator #5 (b31-b24), #6 (b23-b16), reserved (b15-b0)
     Psr(u8),
+    // TODO: It's possible if this isn't needed if OperandCount is observed during decoding.
+    Unknown(u32),
 }
 
 impl Operand {
-    fn new_register(num: u32) -> Option<Operand> {
+    fn new_register(num: u32) -> Operand {
         if (num & 0x80000000) != 0 {
             let num = num & !0x80000000;
             if num < 128 {
-                Some(Operand::Psr(num.try_into().unwrap()))
+                Operand::Psr(num.try_into().unwrap())
             } else {
-                None
+                Operand::Unknown(num)
             }
         } else if num < 4096 {
-            Some(Operand::Gpr(num.try_into().unwrap()))
+            Operand::Gpr(num.try_into().unwrap())
         } else {
-            None
+            Operand::Unknown(num)
         }
     }
 }
@@ -282,7 +301,17 @@ impl BluRay {
                 let destination = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
                 let source = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
-                let _operand_count = (bytes[0] >> 5) & 0x7;
+                let operand_count = (bytes[0] >> 5) & 0x7;
+                let operand_count = match operand_count {
+                    0 => Ok(OperandCount::None),
+                    1 => Ok(OperandCount::DestinationOnly),
+                    2 => Ok(OperandCount::DestinationAndSource),
+                    _ => Err(OpenError::NavigationCommandBadOperandCount(
+                        i,
+                        j,
+                        operand_count,
+                    )),
+                }?;
                 let command_group = (bytes[0] >> 3) & 0x3;
                 let command_sub_group = bytes[0] & 0x7;
 
@@ -307,18 +336,17 @@ impl BluRay {
                     Operand::Immediate(destination)
                 } else {
                     Operand::new_register(destination)
-                        .ok_or_else(|| OpenError::NavigationCommandBadRegister(i, j, destination))?
                 };
 
                 let source = if source_is_immediate_value {
                     Operand::Immediate(source)
                 } else {
                     Operand::new_register(source)
-                        .ok_or_else(|| OpenError::NavigationCommandBadRegister(i, j, source))?
                 };
 
                 navigation_commands.push(NavigationCommand {
                     command,
+                    operand_count,
                     destination,
                     source,
                 });
