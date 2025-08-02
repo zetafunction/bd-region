@@ -30,6 +30,8 @@ enum Command {
 struct RemoveArgs {
     #[arg(long)]
     region: Region,
+    #[arg(long)]
+    country: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,7 +41,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Dump => dump(bluray),
         Command::Test => test(bluray),
-        Command::Remove(RemoveArgs) => (),
+        Command::Remove(_remove_args) => (),
     };
     Ok(())
 }
