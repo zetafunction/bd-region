@@ -66,6 +66,33 @@ pub struct MovieObjectFile {
     pub extension_data: Vec<u8>,
 }
 
+impl MovieObjectFile {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut bytes = vec![];
+        bytes.extend_from_slice(&self.header);
+        bytes.extend_from_slice(&self.movie_objects.byte_len.to_be_bytes());
+        bytes.extend_from_slice(&self.movie_objects.reserved);
+        bytes.extend_from_slice(
+            &u16::try_from(self.movie_objects.movie_objects.len())
+                .unwrap()
+                .to_be_bytes(),
+        );
+        for movie_object in &self.movie_objects.movie_objects {
+            bytes.extend_from_slice(&movie_object.header.to_be_bytes());
+            bytes.extend_from_slice(
+                &u16::try_from(movie_object.navigation_commands.len())
+                    .unwrap()
+                    .to_be_bytes(),
+            );
+            for navigation_command in &movie_object.navigation_commands {
+                bytes.extend_from_slice(&navigation_command.raw_bytes);
+            }
+        }
+        bytes.extend_from_slice(&self.extension_data);
+        bytes
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct MovieObjects {
@@ -97,7 +124,7 @@ pub struct NavigationCommand {
     pub operand_count: OperandCount,
     pub destination: Operand,
     pub source: Operand,
-    pub bytes: [u8; 12],
+    pub raw_bytes: [u8; 12],
 }
 
 impl std::fmt::Debug for NavigationCommand {
@@ -110,7 +137,7 @@ impl std::fmt::Debug for NavigationCommand {
             .finish()?;
         // TODO: It'd be nice to emit the 0x prefix here, but the default Debug impl likes to
         // format it with newlines instead then.
-        write!(fmt, " with raw bytes: {:02x?}", self.bytes)
+        write!(fmt, " with raw bytes: {:02x?}", self.raw_bytes)
     }
 }
 
@@ -385,7 +412,7 @@ impl BluRay {
                     operand_count,
                     destination,
                     source,
-                    bytes: *bytes,
+                    raw_bytes: *bytes,
                 });
             }
 

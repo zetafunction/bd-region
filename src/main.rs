@@ -1,7 +1,8 @@
 mod bluray;
 
 use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::bluray::{BluRay, Operand, OperandCount, Region};
 
@@ -32,6 +33,8 @@ struct RemoveArgs {
     region: Region,
     #[arg(long)]
     country: String,
+    /// Where to save the new MovieObject.bdmv file.
+    output_path: PathBuf,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,7 +44,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Dump => dump(bluray),
         Command::Test => test(bluray),
-        Command::Remove(_remove_args) => (),
+        Command::Remove(args) => remove(bluray, args.region, &args.country, &args.output_path)?,
     };
     Ok(())
 }
@@ -101,4 +104,14 @@ fn test(bluray: BluRay) {
             }
         }
     }
+}
+
+fn remove(bluray: BluRay, region: Region, country: &str, output_path: &Path) -> anyhow::Result<()> {
+    // For now, just reserialize it.
+    let mut out = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(output_path)?;
+    out.write_all(&bluray.movie_object_file.serialize())?;
+    Ok(())
 }
