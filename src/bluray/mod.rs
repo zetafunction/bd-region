@@ -67,6 +67,14 @@ pub struct MovieObject {
     pub navigation_commands: Vec<NavigationCommand>,
 }
 
+pub struct NavigationCommandBytes([u8; 12]);
+
+impl std::fmt::Debug for NavigationCommandBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "{:#04x?}", self.0)
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct NavigationCommand {
@@ -74,6 +82,7 @@ pub struct NavigationCommand {
     pub operand_count: OperandCount,
     pub destination: Operand,
     pub source: Operand,
+    pub bytes: NavigationCommandBytes,
 }
 
 #[allow(dead_code)]
@@ -299,7 +308,7 @@ impl BluRay {
                 unparsed = remainder;
 
                 let destination = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
-                let source = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+                let source = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
 
                 let operand_count = (bytes[0] >> 5) & 0x7;
                 let operand_count = match operand_count {
@@ -349,6 +358,7 @@ impl BluRay {
                     operand_count,
                     destination,
                     source,
+                    bytes: NavigationCommandBytes(*bytes),
                 });
             }
 
@@ -359,6 +369,7 @@ impl BluRay {
                 navigation_commands,
             });
         }
+        println!("{} unconsumed bytes", unparsed.len());
         Ok(BluRay {
             path: path.to_path_buf(),
             movie_objects,
