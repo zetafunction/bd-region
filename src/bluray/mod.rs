@@ -430,10 +430,14 @@ impl BluRay {
         // Assume all unconsumed data is extension data.
         movie_object_file.extension_data = unparsed.to_vec();
 
-        Ok(BluRay {
-            path: path.to_path_buf(),
-            movie_object_file,
-        })
+        if movie_object_file.serialize() == contents {
+            Ok(BluRay {
+                path: path.to_path_buf(),
+                movie_object_file,
+            })
+        } else {
+            Err(OpenError::MovieObjectFileUnsupported)
+        }
     }
 }
 
