@@ -53,6 +53,8 @@ pub enum OpenError {
         "invalid MovieObject.bdmv: movie object #{0} navigation command #{1} could not be decoded: {2:#04x?}"
     )]
     NavigationCommandInvalid(u16, u16, [u8; 12]),
+    #[error("Invalid MovieObject.bdmv: movie object #{0} navigation command #{1} has bad register {2:#04x}")]
+    NavigationCommandBadRegister(u16, u16, u32),
 }
 
 #[allow(dead_code)]
@@ -135,7 +137,82 @@ pub enum Set {
 #[allow(dead_code)]
 pub enum Operand {
     Immediate(u32),
-    Register(u32),
+    /// A general-purpose register. Valid values are 0 to 4095, inclusive.
+    ///
+    /// 0-999: unreserved
+    /// 1000-1999: current audio, subtitle, and chapter number for each playlist
+    /// 2000-3999: current play time for resume feature for each playlist
+    /// 4001: sound FX on or off
+    /// 4002: reserved for future use
+    /// 4003: 3D mode
+    /// 4004: reserved for future use
+    /// 4005: "top menu" pressed flag
+    /// 4006-4090: unreserved
+    /// 4091-4095: reserved for BDS Java code
+    Gpr(u16),
+    /// Player-specific registers. Valid values are 0 to 127, inclusive.
+    /// 0: interactive graphics stream number (read/write)
+    /// 1: primary audio stream number (read/write)
+    /// 2: PG TextST and PiP PG TextST stream numbers (read/write)
+    /// 3: angle number (read/write)
+    /// 4: title number (read/write)
+    /// 5: chapter number (read/write)
+    /// 6: play list ID (read/write)
+    /// 7: play item ID (read/write)
+    /// 8: presentation time (read-only)
+    /// 9: timer (read-only)
+    /// 10: selected button ID (read/write)
+    /// 11: menu page ID (read/write)
+    /// 12: TextST user style number (read/write)
+    /// 13: parental level (read-only)
+    /// 14: secondary audio/video stream (read/write)
+    /// 15: audio capability (read-only)
+    /// 16: audio language (read-only)
+    /// 17: PG and TextST language (read-only)
+    /// 18: menu language (read-only)
+    /// 19: Country read-only
+    /// 20: Region read-only
+    /// 21: to 28 Reserved
+    /// 29: Video Capability read-only
+    /// 30: TextST Capability read-only
+    /// 31: Player Profile and Version read-only
+    ///     0000 or 1000: no VFS capability nor BD-J network connectivity
+    ///     0001: VFS capability but not BD-J network connectivity
+    ///     0011: VFS capability and BD-J network connectivity
+    /// 32: to 35 Reserved
+    /// 36: Backup PSR4 (for resume) read/write
+    /// 37: Backup PSR5 read/write
+    /// 38: Backup PSR6 read/write
+    /// 39: Backup PSR7 read/write
+    /// 40: Backup PSR8 read-only
+    /// 41: Reserved
+    /// 42: Backup PSR10 read/write
+    /// 43: Backup PSR11 read/write
+    /// 44: Backup PSR12 read/write
+    /// 45 to 47: Reserved
+    /// 48 to 61: TextST capability for each language read-only
+    /// 62 to 95: Reserved
+    /// 96 to 111: Reserved for BD system
+    /// 96: playlist indicator #1 (b31-b24), #2 (b23-b16), #3 (b15-b8), #4 (b7-b0)
+    /// 97: playlist indicator #5 (b31-b24), #6 (b23-b16), reserved (b15-b0)
+    Psr(u8),
+}
+
+impl Operand {
+    fn new_register(num: u32) -> Option<Operand> {
+        if (num & 0x80000000) != 0 {
+            let num = num & !0x80000000;
+            if num < 128 {
+                Some(Operand::Psr(num.try_into().unwrap()))
+            } else {
+                None
+            }
+        } else if num < 4096 {
+            Some(Operand::Gpr(num.try_into().unwrap()))
+        } else {
+            None
+        }
+    }
 }
 
 impl BluRay {
@@ -205,7 +282,7 @@ impl BluRay {
                 let destination = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
                 let source = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
 
-                let operand_count = (bytes[0] >> 5) & 0x7;
+                let _operand_count = (bytes[0] >> 5) & 0x7;
                 let command_group = (bytes[0] >> 3) & 0x3;
                 let command_sub_group = bytes[0] & 0x7;
 
@@ -229,13 +306,15 @@ impl BluRay {
                 let destination = if destination_is_immediate_value {
                     Operand::Immediate(destination)
                 } else {
-                    Operand::Register(destination)
+                    Operand::new_register(destination)
+                        .ok_or_else(|| OpenError::NavigationCommandBadRegister(i, j, destination))?
                 };
 
                 let source = if source_is_immediate_value {
                     Operand::Immediate(source)
                 } else {
-                    Operand::Register(source)
+                    Operand::new_register(source)
+                        .ok_or_else(|| OpenError::NavigationCommandBadRegister(i, j, source))?
                 };
 
                 navigation_commands.push(NavigationCommand {
