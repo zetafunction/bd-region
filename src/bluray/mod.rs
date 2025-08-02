@@ -23,7 +23,7 @@ pub enum Region {
 #[derive(Debug)]
 pub struct BluRay {
     path: PathBuf,
-    pub movie_objects: Vec<MovieObject>,
+    pub movie_object_file: MovieObjectFile,
 }
 
 #[derive(Debug, Error)]
@@ -31,13 +31,9 @@ pub enum OpenError {
     #[error("IO error for {0}")]
     IoError(&'static str, #[source] std::io::Error),
     #[error("invalid MovieObject.bdmv: header too short")]
-    NoMagicBytes,
+    TruncatedHeader,
     #[error("invalid MovieObject.bdmv header: {0:#04x?}")]
     BadMagicBytes([u8; 8]),
-    #[error("invalid MovieObject.bdmv header: no extension start address")]
-    NoExtensionStartAddress,
-    #[error("invalid MovieObject.bdmv header: no reserved bytes")]
-    NoReservedBytes,
     #[error("invalid MovieObject.bdmv header: no length for movie objects")]
     MovieObjectsNoLength,
     #[error("invalid MovieObject.bdmv header: no reserved bytes for movie objects")]
@@ -60,10 +56,38 @@ pub enum OpenError {
 
 #[allow(dead_code)]
 #[derive(Debug)]
+pub struct MovieObjectFile {
+    // Bytes 0..4 are the type indicator ("MOBJ")
+    // Bytes 4..8 are the version number ("0020" for regular discs, "0030" for UHD)
+    // Bytes 8..12 are the extension data start address
+    // Bytes 12..40 are reserved
+    pub header: [u8; 40],
+    pub movie_objects: MovieObjects,
+    pub extension_data: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct MovieObjects {
+    /// Byte length of the movie objects, encoded as big endian.
+    pub byte_len: u32,
+    pub reserved: [u8; 4],
+    /// The actual movie objects. Note that the format reserves a big endian u16 before the actual
+    /// movie objects that stores `movie_objects.len()`.
+    pub movie_objects: Vec<MovieObject>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
 pub struct MovieObject {
-    resume_intention: bool,
-    menu_call_mask: bool,
-    title_search_mask: bool,
+    /// The header for the movie object.
+    /// bit 15: resume intention flag
+    /// bit 14: menu call mask
+    /// bit 13: title search mask
+    /// Remaining bits are reserved.
+    pub header: u16,
+    /// The actual navigation commands. Note that the format reserves a big endian u16 before the
+    /// actual navigation command that stores `navigation_commands.len()`.
     pub navigation_commands: Vec<NavigationCommand>,
 }
 
@@ -258,56 +282,53 @@ impl BluRay {
             .read_to_end(&mut contents)
             .map_err(|e| OpenError::IoError(MOVIE_OBJECT_PATH, e))?;
         let contents = contents;
-        // First 8 bytes are the magic signature.
-        let (magic_bytes, remainder) = contents
-            .split_first_chunk::<8>()
-            .ok_or(OpenError::NoMagicBytes)?;
+        // First 40 bytes are the header. Most of the header isn't interesting here, but check
+        // the first 8 bytes which contain a magic signature.
+        let (header, remainder) = contents
+            .split_first_chunk::<40>()
+            .ok_or(OpenError::TruncatedHeader)?;
+        let magic_bytes = header.first_chunk::<8>().unwrap();
         if magic_bytes != MOVIE_OBJECT_HEADER {
             return Err(OpenError::BadMagicBytes(*magic_bytes));
         }
-        // Next 4 bytes are the extension start address, which may be zero.
-        let (_extension_start_address, remainder) = remainder
-            .split_first_chunk::<4>()
-            .ok_or(OpenError::NoExtensionStartAddress)?;
-        // Next 28 bytes are reserved.
-        let (_reserved, remainder) = remainder
-            .split_first_chunk::<28>()
-            .ok_or(OpenError::NoReservedBytes)?;
-        let (movie_objects_length, remainder) = remainder
+        let (movie_objects_len, remainder) = remainder
             .split_first_chunk::<4>()
             .ok_or(OpenError::MovieObjectsNoLength)?;
-        let movie_objects_length = u32::from_be_bytes(*movie_objects_length);
-        println!("movie objects length: {movie_objects_length} bytes");
-        let (_reserved, remainder) = remainder
+        let movie_objects_len = u32::from_be_bytes(*movie_objects_len);
+        let (movie_objects_reserved, remainder) = remainder
             .split_first_chunk::<4>()
             .ok_or(OpenError::MovieObjectsNoReservedBytes)?;
         let (movie_objects_count, remainder) = remainder
             .split_first_chunk::<2>()
             .ok_or(OpenError::MovieObjectsNoCount)?;
         let movie_objects_count = u16::from_be_bytes(*movie_objects_count);
-        println!("movie objects count: {movie_objects_count}");
+
+        let mut movie_object_file = MovieObjectFile {
+            header: *header,
+            movie_objects: MovieObjects {
+                byte_len: movie_objects_len,
+                reserved: *movie_objects_reserved,
+                // TODO: Yes, this naming is astonishingly bad.
+                movie_objects: vec![],
+            },
+            extension_data: vec![],
+        };
         let mut unparsed = remainder;
-        let mut movie_objects = vec![];
         for i in 0..movie_objects_count {
             let (flags, remainder) = unparsed
                 .split_first_chunk::<2>()
                 .ok_or(OpenError::MovieObjectNoFlags)?;
             unparsed = remainder;
-            let flags = u16::from_be_bytes(*flags);
-            let resume_intention = (flags & (1 << 15)) != 0;
-            let menu_call_mask = (flags & (1 << 14)) != 0;
-            let title_search_mask = (flags & (1 << 13)) != 0;
-
+            let header = u16::from_be_bytes(*flags);
             let (navigation_commands_count, remainder) = unparsed
                 .split_first_chunk::<2>()
                 .ok_or(OpenError::NavigationCommandsNoCount)?;
             unparsed = remainder;
             let navigation_commands_count = u16::from_be_bytes(*navigation_commands_count);
-            println!("movie object #{i} navigation command count: {navigation_commands_count}");
 
             let mut navigation_commands = vec![];
             for j in 0..navigation_commands_count {
-                // Each navigation command should be exactly 96 bits.
+                // Each navigation command should be exactly 12 bytes.
                 let (bytes, remainder) = unparsed
                     .split_first_chunk::<12>()
                     .ok_or(OpenError::NavigationCommandTruncated(i, j))?;
@@ -368,17 +389,18 @@ impl BluRay {
                 });
             }
 
-            movie_objects.push(MovieObject {
-                resume_intention,
-                menu_call_mask,
-                title_search_mask,
-                navigation_commands,
-            });
+            movie_object_file
+                .movie_objects
+                .movie_objects
+                .push(MovieObject {
+                    header,
+                    navigation_commands,
+                });
         }
-        println!("{} unconsumed bytes", unparsed.len());
+        // Assume all unconsumed data is extension data.
         Ok(BluRay {
             path: path.to_path_buf(),
-            movie_objects,
+            movie_object_file,
         })
     }
 }

@@ -47,15 +47,29 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn dump(bluray: BluRay) {
-    for (i, movie_object) in (0..).zip(bluray.movie_objects.iter()) {
+    println!(
+        "movie object header: {:02x?}",
+        bluray.movie_object_file.header
+    );
+    println!(
+        "movie objects byte size: {}",
+        bluray.movie_object_file.movie_objects.byte_len
+    );
+    for (i, movie_object) in (0..).zip(bluray.movie_object_file.movie_objects.movie_objects.iter())
+    {
         for (j, navigation_command) in (0..).zip(movie_object.navigation_commands.iter()) {
             println!("movie object #{i} navigation command #{j} {navigation_command:?}");
         }
     }
+    println!(
+        "movie object extension data: {:02x?}",
+        bluray.movie_object_file.extension_data
+    );
 }
 
 fn test(bluray: BluRay) {
-    for (i, movie_object) in (0..).zip(bluray.movie_objects.iter()) {
+    for (i, movie_object) in (0..).zip(bluray.movie_object_file.movie_objects.movie_objects.iter())
+    {
         for (j, navigation_command) in (0..).zip(movie_object.navigation_commands.iter()) {
             match (
                 &navigation_command.operand_count,
