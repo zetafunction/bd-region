@@ -67,22 +67,27 @@ pub struct MovieObject {
     pub navigation_commands: Vec<NavigationCommand>,
 }
 
-pub struct NavigationCommandBytes([u8; 12]);
-
-impl std::fmt::Debug for NavigationCommandBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{:#04x?}", self.0)
-    }
-}
-
 #[allow(dead_code)]
-#[derive(Debug)]
 pub struct NavigationCommand {
     pub command: Command,
     pub operand_count: OperandCount,
     pub destination: Operand,
     pub source: Operand,
-    pub bytes: NavigationCommandBytes,
+    pub bytes: [u8; 12],
+}
+
+impl std::fmt::Debug for NavigationCommand {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_struct("NavigationCommand")
+            .field("command", &self.command)
+            .field("operand_count", &self.operand_count)
+            .field("destination", &self.destination)
+            .field("source", &self.source)
+            .finish()?;
+        // TODO: It'd be nice to emit the 0x prefix here, but the default Debug impl likes to
+        // format it with newlines instead then.
+        write!(fmt, " with raw bytes: {:02x?}", self.bytes)
+    }
 }
 
 #[allow(dead_code)]
@@ -358,7 +363,7 @@ impl BluRay {
                     operand_count,
                     destination,
                     source,
-                    bytes: NavigationCommandBytes(*bytes),
+                    bytes: *bytes,
                 });
             }
 
