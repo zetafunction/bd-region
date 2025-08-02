@@ -3,6 +3,7 @@ mod bluray;
 use clap::{Args, Parser, Subcommand};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 
 use crate::bluray::{BluRay, Operand, OperandCount, Region};
 
@@ -30,12 +31,49 @@ enum Command {
 #[derive(Args)]
 struct RemoveArgs {
     #[arg(long)]
+    /// What region to overwrite use of PSR 20 with.
     region: Region,
     #[arg(long)]
-    /// An ISO 3166-1 alpha-2 code, e.g. "US" or "JP".
+    /// What country to overwrite use of PSR 19 with. This should be an ISO 3166-1 alpha-2 code
+    /// specified in uppercase letters, e.g. "US" or "JP".
     country: String,
+    #[arg(long)]
+    /// Any additional navigation commands to patch out with a nop. A location consists of a
+    /// 0-based movie object index, a comma, and a 0-based navigation command index.
+    nop_patch: Vec<NavigationCommandLocator>,
     /// Where to save the new MovieObject.bdmv file.
     output_path: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+struct NavigationCommandLocator {
+    movie_object_index: u16,
+    navigation_command_index: u16,
+}
+
+#[derive(Debug, Error)]
+enum NavigationCommandLocatorParseError {
+    #[error("missing comma")]
+    MissingComma,
+    #[error("invalid movie object index")]
+    InvalidMovieObjectIndex(#[source] std::num::ParseIntError),
+    #[error("invalid navigation command index")]
+    InvalidNavigationCommandIndex(#[source] std::num::ParseIntError),
+}
+
+impl std::str::FromStr for NavigationCommandLocator {
+    type Err = NavigationCommandLocatorParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (first, second) = s.split_once(',').ok_or(Self::Err::MissingComma)?;
+        let movie_object_index = first.parse().map_err(Self::Err::InvalidMovieObjectIndex)?;
+        let navigation_command_index = second
+            .parse()
+            .map_err(Self::Err::InvalidNavigationCommandIndex)?;
+        Ok(NavigationCommandLocator {
+            movie_object_index,
+            navigation_command_index,
+        })
+    }
 }
 
 fn main() -> anyhow::Result<()> {
