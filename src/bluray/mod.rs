@@ -50,8 +50,10 @@ pub enum OpenError {
         "invalid MovieObject.bdmv: movie object #{0} navigation command #{1} could not be decoded: {2:#04x?}"
     )]
     NavigationCommandInvalid(u16, u16, [u8; 12]),
-    #[error("Invalid MovieObject.bdmv: movie object #{0} navigation command #{1} has bad operand count {2:#04x}")]
+    #[error("invalid MovieObject.bdmv: movie object #{0} navigation command #{1} has bad operand count {2:#04x}")]
     NavigationCommandBadOperandCount(u16, u16, u8),
+    #[error("unsupported MovieObject.bdmv: re-serialization roundtrip safety check failed")]
+    MovieObjectFileUnsupported,
 }
 
 #[allow(dead_code)]
@@ -424,7 +426,10 @@ impl BluRay {
                     navigation_commands,
                 });
         }
+
         // Assume all unconsumed data is extension data.
+        movie_object_file.extension_data = unparsed.to_vec();
+
         Ok(BluRay {
             path: path.to_path_buf(),
             movie_object_file,
