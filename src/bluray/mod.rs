@@ -201,6 +201,7 @@ impl std::fmt::Debug for NavigationCommand {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum Command {
     Branch(Branch),
@@ -273,6 +274,7 @@ pub enum OperandCount {
     DestinationAndSource,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum Operand {
     Immediate(u32),
