@@ -12,14 +12,13 @@ const MOVIE_OBJECT_HEADER: &[u8] = b"MOBJ0200";
 pub enum Region {
     /// North America, South America, U.S. Territories, Japan, South Korea, Taiwan, and other areas of
     /// Southeast Asia.
-    A,
+    A = 1,
     /// Europe, Africa, Middle East, Australia, and New Zealand.
-    B,
+    B = 2,
     /// Asia (except for Japan, Korea, Taiwan, and other areas of Southeast Asia)
-    C,
+    C = 4,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct BluRay {
     path: PathBuf,
@@ -47,16 +46,13 @@ pub enum OpenError {
     #[error("invalid MovieObject.bdmv: movie object #{0} navigation command #{1} truncated")]
     NavigationCommandTruncated(u16, u16),
     #[error(
-        "invalid MovieObject.bdmv: movie object #{0} navigation command #{1} could not be decoded: {2:#04x?}"
+        "invalid MovieObject.bdmv: movie object #{0} navigation command #{1} is invalid: {2:#04x?}"
     )]
-    NavigationCommandInvalid(u16, u16, [u8; 12]),
-    #[error("invalid MovieObject.bdmv: movie object #{0} navigation command #{1} has bad operand count {2:#04x}")]
-    NavigationCommandBadOperandCount(u16, u16, u8),
+    NavigationCommandInvalid(u16, u16, #[source] NavigationCommandParseError),
     #[error("unsupported MovieObject.bdmv: re-serialization roundtrip safety check failed")]
     MovieObjectFileUnsupported,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct MovieObjectFile {
     // Bytes 0..4 are the type indicator ("MOBJ")
@@ -95,7 +91,6 @@ impl MovieObjectFile {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct MovieObjects {
     /// Byte length of the movie objects, encoded as big endian.
@@ -106,7 +101,6 @@ pub struct MovieObjects {
     pub movie_objects: Vec<MovieObject>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct MovieObject {
     /// The header for the movie object.
@@ -120,13 +114,77 @@ pub struct MovieObject {
     pub navigation_commands: Vec<NavigationCommand>,
 }
 
-#[allow(dead_code)]
+#[derive(Clone, Copy)]
 pub struct NavigationCommand {
     pub command: Command,
     pub operand_count: OperandCount,
     pub destination: Operand,
     pub source: Operand,
     pub raw_bytes: [u8; 12],
+}
+
+#[derive(Debug, Error)]
+pub enum NavigationCommandParseError {
+    // TODO: It'd be nice to emit the 0x prefix here, but the default Debug impl likes to format it
+    // with newlines instead then.
+    #[error("failed to decode {0:02x?}")]
+    DecodeFailed([u8; 12]),
+    #[error("bad operand count {0:#04x}")]
+    BadOperandCount(u8),
+}
+
+impl NavigationCommand {
+    // TODO: This can only return certain errors, so maybe the error type should be more specific.
+    pub fn from_bytes(bytes: &[u8; 12]) -> Result<Self, NavigationCommandParseError> {
+        let destination = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+        let source = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+
+        let operand_count = (bytes[0] >> 5) & 0x7;
+        let operand_count = match operand_count {
+            0 => Ok(OperandCount::None),
+            1 => Ok(OperandCount::DestinationOnly),
+            2 => Ok(OperandCount::DestinationAndSource),
+            _ => Err(NavigationCommandParseError::BadOperandCount(operand_count)),
+        }?;
+        let command_group = (bytes[0] >> 3) & 0x3;
+        let command_sub_group = bytes[0] & 0x7;
+
+        let destination_is_immediate_value = (bytes[1] & (1 << 7)) != 0;
+        let source_is_immediate_value = (bytes[1] & (1 << 6)) != 0;
+        let branch_option = bytes[1] & 0xf;
+
+        let compare_option = bytes[2] & 0xf;
+
+        let set_option = bytes[3] & 0x1f;
+
+        let command = decode_command(
+            command_group,
+            command_sub_group,
+            branch_option,
+            compare_option,
+            set_option,
+        )
+        .ok_or(NavigationCommandParseError::DecodeFailed(*bytes))?;
+
+        let destination = if destination_is_immediate_value {
+            Operand::Immediate(destination)
+        } else {
+            Operand::new_register(destination)
+        };
+
+        let source = if source_is_immediate_value {
+            Operand::Immediate(source)
+        } else {
+            Operand::new_register(source)
+        };
+        Ok(Self {
+            command,
+            operand_count,
+            destination,
+            source,
+            raw_bytes: *bytes,
+        })
+    }
 }
 
 impl std::fmt::Debug for NavigationCommand {
@@ -143,15 +201,14 @@ impl std::fmt::Debug for NavigationCommand {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Command {
     Branch(Branch),
     Compare(Compare),
     Set(Set),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Branch {
     Nop,
     GoTo,
@@ -169,7 +226,7 @@ pub enum Branch {
     LinkMark,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Compare {
     Bc,
     Eq,
@@ -181,7 +238,7 @@ pub enum Compare {
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Set {
     Move,
     Swap,
@@ -209,16 +266,14 @@ pub enum Set {
     StillOff,
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum OperandCount {
     None,
     DestinationOnly,
     DestinationAndSource,
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Operand {
     Immediate(u32),
     /// A general-purpose register. Valid values are 0 to 4095, inclusive.
@@ -363,59 +418,10 @@ impl BluRay {
                     .ok_or(OpenError::NavigationCommandTruncated(i, j))?;
                 unparsed = remainder;
 
-                let destination = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
-                let source = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
-
-                let operand_count = (bytes[0] >> 5) & 0x7;
-                let operand_count = match operand_count {
-                    0 => Ok(OperandCount::None),
-                    1 => Ok(OperandCount::DestinationOnly),
-                    2 => Ok(OperandCount::DestinationAndSource),
-                    _ => Err(OpenError::NavigationCommandBadOperandCount(
-                        i,
-                        j,
-                        operand_count,
-                    )),
-                }?;
-                let command_group = (bytes[0] >> 3) & 0x3;
-                let command_sub_group = bytes[0] & 0x7;
-
-                let destination_is_immediate_value = (bytes[1] & (1 << 7)) != 0;
-                let source_is_immediate_value = (bytes[1] & (1 << 6)) != 0;
-                let branch_option = bytes[1] & 0xf;
-
-                let compare_option = bytes[2] & 0xf;
-
-                let set_option = bytes[3] & 0x1f;
-
-                let command = decode_command(
-                    command_group,
-                    command_sub_group,
-                    branch_option,
-                    compare_option,
-                    set_option,
-                )
-                .ok_or(OpenError::NavigationCommandInvalid(i, j, *bytes))?;
-
-                let destination = if destination_is_immediate_value {
-                    Operand::Immediate(destination)
-                } else {
-                    Operand::new_register(destination)
-                };
-
-                let source = if source_is_immediate_value {
-                    Operand::Immediate(source)
-                } else {
-                    Operand::new_register(source)
-                };
-
-                navigation_commands.push(NavigationCommand {
-                    command,
-                    operand_count,
-                    destination,
-                    source,
-                    raw_bytes: *bytes,
-                });
+                navigation_commands.push(
+                    NavigationCommand::from_bytes(bytes)
+                        .map_err(|err| OpenError::NavigationCommandInvalid(i, j, err))?,
+                );
             }
 
             movie_object_file

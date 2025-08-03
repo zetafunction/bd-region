@@ -1,11 +1,12 @@
 mod bluray;
 
 use clap::{Args, Parser, Subcommand};
+use std::collections::HashSet;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::bluray::{BluRay, Operand, OperandCount, Region};
+use crate::bluray::{BluRay, MovieObject, NavigationCommand, Operand, OperandCount, Region};
 
 #[derive(Parser)]
 /// Utility to test or remove region checks from Blu-Ray disc. Blu-Ray discs can perform region
@@ -33,7 +34,7 @@ struct RemoveArgs {
     #[arg(long)]
     /// What region to overwrite use of PSR 20 with.
     region: Region,
-    #[arg(long)]
+    #[arg(long, value_parser=parse_country)]
     /// What country to overwrite use of PSR 19 with. This should be an ISO 3166-1 alpha-2 code
     /// specified in uppercase letters, e.g. "US" or "JP".
     country: String,
@@ -45,7 +46,15 @@ struct RemoveArgs {
     output_path: PathBuf,
 }
 
-#[derive(Clone, Copy)]
+fn parse_country(s: &str) -> Result<String, String> {
+    if s.len() == 2 && s.chars().all(|c| c.is_ascii_uppercase()) {
+        Ok(s.to_string())
+    } else {
+        Err("country must be an uppercase ISO 3166-1 alpha-2 code, e.g. 'US' or 'JP'".to_string())
+    }
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct NavigationCommandLocator {
     movie_object_index: u16,
     navigation_command_index: u16,
@@ -83,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Dump => dump(bluray),
         Command::Test => test(bluray),
-        Command::Remove(args) => remove(bluray, args.region, &args.country, &args.output_path)?,
+        Command::Remove(args) => args.exec(bluray)?,
     };
     Ok(())
 }
@@ -118,20 +127,17 @@ fn test(bluray: BluRay) {
                 &navigation_command.destination,
                 &navigation_command.source,
             ) {
-                (OperandCount::DestinationOnly, &Operand::Psr(dest), _)
-                    if dest == 19 || dest == 20 =>
-                {
-                    println!("movie object #{i} navigation command #{j} {navigation_command:?}");
-                }
-                (OperandCount::DestinationAndSource, &Operand::Psr(dest), _)
-                    if dest == 19 || dest == 20 =>
-                {
-                    println!("movie object #{i} navigation command #{j} {navigation_command:?}");
-                }
                 (OperandCount::DestinationAndSource, _, &Operand::Psr(source))
                     if source == 19 || source == 20 =>
                 {
                     println!("movie object #{i} navigation command #{j} {navigation_command:?}");
+                }
+                // PSR19 and PSR20 are read-only, so they should only appear as source operands.
+                // Nonetheless, log out any other instance, even if it's unusual.
+                (OperandCount::DestinationAndSource, &Operand::Psr(dest), _)
+                    if dest == 19 || dest == 20 =>
+                {
+                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {navigation_command:?}");
                 }
                 (_, &Operand::Psr(dest), _) if dest == 19 || dest == 20 => {
                     println!("UNEXPECTED: movie object #{i} navigation command #{j} {navigation_command:?}");
@@ -145,12 +151,65 @@ fn test(bluray: BluRay) {
     }
 }
 
-fn remove(bluray: BluRay, region: Region, country: &str, output_path: &Path) -> anyhow::Result<()> {
-    // For now, just reserialize it.
-    let mut out = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(output_path)?;
-    out.write_all(&bluray.movie_object_file.serialize())?;
-    Ok(())
+impl RemoveArgs {
+    fn exec(self, mut bluray: BluRay) -> anyhow::Result<()> {
+        let nop_patches: HashSet<_> = self.nop_patch.into_iter().collect();
+        // TODO: A better design would avoid re-parsing this from the raw bytes.
+        const NOP_COMMAND_BYTES: [u8; 12] = [0; 12];
+        bluray.movie_object_file.movie_objects.movie_objects = (0..)
+            .zip(bluray.movie_object_file.movie_objects.movie_objects)
+            .map(
+                |(
+                    movie_object_index,
+                    MovieObject {
+                        header,
+                        navigation_commands,
+                    },
+                )| {
+                    let navigation_commands = (0..)
+                        .zip(navigation_commands)
+                        .map(|(navigation_command_index, command)| {
+                            if nop_patches.contains(&NavigationCommandLocator {
+                                movie_object_index,
+                                navigation_command_index,
+                            }) {
+                                return NavigationCommand::from_bytes(&NOP_COMMAND_BYTES).unwrap();
+                            }
+                            // Both PSR19 (country) and PSR20 (region) are read-only, so no need to
+                            // check the destination operand at all.
+                            match (&command.operand_count, &command.source) {
+                                (OperandCount::DestinationAndSource, &Operand::Psr(19)) => {
+                                    let mut raw_bytes = command.raw_bytes;
+                                    // Set the "source is immediate" flag
+                                    raw_bytes[1] |= 1 << 6;
+                                    raw_bytes[10..12].copy_from_slice(self.country.as_bytes());
+                                    NavigationCommand::from_bytes(&raw_bytes).unwrap()
+                                }
+                                (OperandCount::DestinationAndSource, &Operand::Psr(20)) => {
+                                    let mut raw_bytes = command.raw_bytes;
+                                    // Set the "source is immediate" flag
+                                    raw_bytes[1] |= 1 << 6;
+                                    raw_bytes[8..12]
+                                        .copy_from_slice(&(self.region as u32).to_be_bytes());
+                                    NavigationCommand::from_bytes(&raw_bytes).unwrap()
+                                }
+                                _ => command,
+                            }
+                        })
+                        .collect();
+                    MovieObject {
+                        header,
+                        navigation_commands,
+                    }
+                },
+            )
+            .collect();
+
+        let mut out = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&self.output_path)?;
+        out.write_all(&bluray.movie_object_file.serialize())?;
+        Ok(())
+    }
 }
