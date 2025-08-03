@@ -6,7 +6,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::bluray::{BluRay, MovieObject, NavigationCommand, Operand, OperandCount, Region};
+use crate::bluray::{
+    MovieObject, MovieObjectFile, NavigationCommand, Operand, OperandCount, Region,
+};
 
 #[derive(Parser)]
 /// Utility to test or remove region checks from Blu-Ray disc. Blu-Ray discs can perform region
@@ -87,63 +89,52 @@ impl std::str::FromStr for NavigationCommandLocator {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let bluray = BluRay::open(&cli.path)?;
+    let file = MovieObjectFile::open(&cli.path)?;
 
     match cli.command {
-        Command::Dump => dump(bluray),
-        Command::Test => test(bluray),
-        Command::Remove(args) => args.exec(bluray)?,
+        Command::Dump => dump(file),
+        Command::Test => test(file),
+        Command::Remove(args) => args.exec(file)?,
     };
     Ok(())
 }
 
-fn dump(bluray: BluRay) {
-    println!(
-        "movie object header: {:02x?}",
-        bluray.movie_object_file.header
-    );
-    println!(
-        "movie objects byte size: {}",
-        bluray.movie_object_file.movie_objects.byte_len
-    );
-    for (i, movie_object) in (0..).zip(bluray.movie_object_file.movie_objects.movie_objects.iter())
-    {
-        for (j, navigation_command) in (0..).zip(movie_object.navigation_commands.iter()) {
-            println!("movie object #{i} navigation command #{j} {navigation_command:?}");
+fn dump(file: MovieObjectFile) {
+    println!("movie object header: {:02x?}", file.header);
+    println!("movie objects byte size: {}", file.movie_objects.byte_len);
+    for (i, object) in (0..).zip(file.movie_objects.movie_objects.iter()) {
+        for (j, command) in (0..).zip(object.navigation_commands.iter()) {
+            println!("movie object #{i} navigation command #{j} {command:?}");
         }
     }
-    println!(
-        "movie object extension data: {:02x?}",
-        bluray.movie_object_file.extension_data
-    );
+    println!("movie object extension data: {:02x?}", file.extension_data);
 }
 
-fn test(bluray: BluRay) {
-    for (i, movie_object) in (0..).zip(bluray.movie_object_file.movie_objects.movie_objects.iter())
-    {
-        for (j, navigation_command) in (0..).zip(movie_object.navigation_commands.iter()) {
+fn test(file: MovieObjectFile) {
+    for (i, object) in (0..).zip(file.movie_objects.movie_objects.iter()) {
+        for (j, command) in (0..).zip(object.navigation_commands.iter()) {
             match (
-                &navigation_command.operand_count,
-                &navigation_command.destination,
-                &navigation_command.source,
+                &command.operand_count,
+                &command.destination,
+                &command.source,
             ) {
                 (OperandCount::DestinationAndSource, _, &Operand::Psr(source))
                     if source == 19 || source == 20 =>
                 {
-                    println!("movie object #{i} navigation command #{j} {navigation_command:?}");
+                    println!("movie object #{i} navigation command #{j} {command:?}");
                 }
                 // PSR19 and PSR20 are read-only, so they should only appear as source operands.
                 // Nonetheless, log out any other instance, even if it's unusual.
                 (OperandCount::DestinationAndSource, &Operand::Psr(dest), _)
                     if dest == 19 || dest == 20 =>
                 {
-                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {navigation_command:?}");
+                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {command:?}");
                 }
                 (_, &Operand::Psr(dest), _) if dest == 19 || dest == 20 => {
-                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {navigation_command:?}");
+                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {command:?}");
                 }
                 (_, &Operand::Psr(source), _) if source == 19 || source == 20 => {
-                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {navigation_command:?}");
+                    println!("UNEXPECTED: movie object #{i} navigation command #{j} {command:?}");
                 }
                 (_, _, _) => continue,
             }
@@ -152,12 +143,12 @@ fn test(bluray: BluRay) {
 }
 
 impl RemoveArgs {
-    fn exec(self, mut bluray: BluRay) -> anyhow::Result<()> {
+    fn exec(self, mut file: MovieObjectFile) -> anyhow::Result<()> {
         let nop_patches: HashSet<_> = self.nop_patch.into_iter().collect();
         // TODO: A better design would avoid re-parsing this from the raw bytes.
         const NOP_COMMAND_BYTES: [u8; 12] = [0; 12];
-        bluray.movie_object_file.movie_objects.movie_objects = (0..)
-            .zip(bluray.movie_object_file.movie_objects.movie_objects)
+        file.movie_objects.movie_objects = (0..)
+            .zip(file.movie_objects.movie_objects)
             .map(
                 |(
                     movie_object_index,
@@ -209,7 +200,7 @@ impl RemoveArgs {
             .create_new(true)
             .write(true)
             .open(&self.output_path)?;
-        out.write_all(&bluray.movie_object_file.serialize())?;
+        out.write_all(&file.serialize())?;
         Ok(())
     }
 }

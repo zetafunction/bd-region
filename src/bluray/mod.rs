@@ -4,7 +4,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-const MOVIE_OBJECT_PATH: &str = "BDMV/MovieObject.bdmv";
 const MOVIE_OBJECT_HEADER: &[u8] = b"MOBJ0200";
 
 /// Blu-Ray media region codes
@@ -19,16 +18,10 @@ pub enum Region {
     C = 4,
 }
 
-#[derive(Debug)]
-pub struct BluRay {
-    path: PathBuf,
-    pub movie_object_file: MovieObjectFile,
-}
-
 #[derive(Debug, Error)]
 pub enum OpenError {
     #[error("IO error for {0}")]
-    IoError(&'static str, #[source] std::io::Error),
+    IoError(PathBuf, #[source] std::io::Error),
     #[error("invalid MovieObject.bdmv: header too short")]
     TruncatedHeader,
     #[error("invalid MovieObject.bdmv header: {0:#04x?}")]
@@ -359,14 +352,14 @@ impl Operand {
     }
 }
 
-impl BluRay {
-    pub fn open(path: &Path) -> Result<BluRay, OpenError> {
-        let mut movie_object_file = File::open(path.join(MOVIE_OBJECT_PATH))
-            .map_err(|e| OpenError::IoError(MOVIE_OBJECT_PATH, e))?;
+impl MovieObjectFile {
+    pub fn open(path: &Path) -> Result<Self, OpenError> {
+        let mut movie_object_file =
+            File::open(path).map_err(|e| OpenError::IoError(path.to_owned(), e))?;
         let mut contents = vec![];
         movie_object_file
             .read_to_end(&mut contents)
-            .map_err(|e| OpenError::IoError(MOVIE_OBJECT_PATH, e))?;
+            .map_err(|e| OpenError::IoError(path.to_owned(), e))?;
         let contents = contents;
         // First 40 bytes are the header. Most of the header isn't interesting here, but check
         // the first 8 bytes which contain a magic signature.
@@ -439,10 +432,7 @@ impl BluRay {
         movie_object_file.extension_data = unparsed.to_vec();
 
         if movie_object_file.serialize() == contents {
-            Ok(BluRay {
-                path: path.to_path_buf(),
-                movie_object_file,
-            })
+            Ok(movie_object_file)
         } else {
             Err(OpenError::MovieObjectFileUnsupported)
         }
