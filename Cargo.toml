@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 clap = { version = "4.5.40", features = ["derive", "wrap_help"] }
+dialoguer = { version = "0.11.0", default-features = false }
 thiserror = "2.0.12"

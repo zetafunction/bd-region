@@ -1,9 +1,10 @@
 mod bluray;
 
 use clap::{Args, Parser, Subcommand};
+use dialoguer::Confirm;
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::bluray::{
@@ -33,19 +34,28 @@ enum Command {
 
 #[derive(Args)]
 struct RemoveArgs {
-    #[arg(long)]
     /// What region to overwrite use of PSR 20 with.
+    #[arg(long)]
     region: Region,
-    #[arg(long, value_parser=parse_country)]
     /// What country to overwrite use of PSR 19 with. This should be an ISO 3166-1 alpha-2 code
     /// specified in uppercase letters, e.g. "US" or "JP".
+    #[arg(long, value_parser=parse_country)]
     country: String,
-    #[arg(long)]
     /// Any additional navigation commands to patch out with a nop. A location consists of a
     /// 0-based movie object index, a comma, and a 0-based navigation command index.
+    #[arg(long)]
     nop_patch: Vec<NavigationCommandLocator>,
+    #[command(flatten)]
+    output: Output,
+}
+
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+struct Output {
     /// Where to save the new MovieObject.bdmv file.
-    output_path: PathBuf,
+    output_path: Option<PathBuf>,
+    #[arg(long)]
+    in_place: bool,
 }
 
 fn parse_country(s: &str) -> Result<String, String> {
@@ -94,7 +104,8 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Dump => dump(file),
         Command::Test => test(file),
-        Command::Remove(args) => args.exec(file)?,
+        // TODO: Plumbing the original path through like this is a bit odd.
+        Command::Remove(args) => args.exec(&cli.path, file)?,
     };
     Ok(())
 }
@@ -143,7 +154,7 @@ fn test(file: MovieObjectFile) {
 }
 
 impl RemoveArgs {
-    fn exec(self, mut file: MovieObjectFile) -> anyhow::Result<()> {
+    fn exec(self, original_path: &Path, mut file: MovieObjectFile) -> anyhow::Result<()> {
         let nop_patches: HashSet<_> = self.nop_patch.into_iter().collect();
         // TODO: A better design would avoid re-parsing this from the raw bytes.
         const NOP_COMMAND_BYTES: [u8; 12] = [0; 12];
@@ -196,11 +207,46 @@ impl RemoveArgs {
             )
             .collect();
 
-        let mut out = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&self.output_path)?;
-        out.write_all(&file.serialize())?;
+        self.output.commit(original_path, file)
+    }
+}
+
+impl Output {
+    fn commit(self, original_path: &Path, file: MovieObjectFile) -> anyhow::Result<()> {
+        if self.in_place {
+            let backup_path = original_path.with_extension("bdmv.orig");
+            // This is racy but good enough.
+            if !std::fs::exists(&backup_path)?
+                || Confirm::new()
+                    .with_prompt(format!(
+                        "{} already exists; overwrite backup?",
+                        backup_path.display()
+                    ))
+                    .interact()?
+            {
+                std::fs::rename(original_path, &backup_path)?;
+            } else if !Confirm::new()
+                .with_prompt(format!(
+                    "Continue without backing up {}?",
+                    original_path.display()
+                ))
+                .interact()?
+            {
+                println!("Cancelled by user, exiting!");
+                return Ok(());
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(original_path)?
+        } else {
+            std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(self.output_path.unwrap())?
+        }
+        .write_all(&file.serialize())?;
         Ok(())
     }
 }

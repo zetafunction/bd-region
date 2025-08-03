@@ -8,6 +8,7 @@ const MOVIE_OBJECT_HEADER: &[u8] = b"MOBJ0200";
 
 /// Blu-Ray media region codes
 #[derive(Clone, Copy, Debug, ValueEnum)]
+#[clap(rename_all = "UPPERCASE")]
 pub enum Region {
     /// North America, South America, U.S. Territories, Japan, South Korea, Taiwan, and other areas of
     /// Southeast Asia.
